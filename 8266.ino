@@ -110,13 +110,17 @@ void connectToApp() {
 void loop() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("[WiFi] 掉线重连中...");
+    // 掉线/重连时：红灯闪烁 (Fix: Ensure Red Flash instead of stale state)
+    static bool s = false; s=!s;
+    setAllLeds(s ? strip.Color(255, 0, 0) : 0); 
     delay(500);
     return; 
   }
+  
   if (!hasFoundServer) {
     findServer();
   } else if (!client.connected()) {
-    // 掉线：蓝灯 (User Original)
+    // 掉线(TCP断开)：蓝灯 (User Original)
     setAllLeds(strip.Color(0, 0, 255)); 
     hasFoundServer = false;
     connectToApp();
@@ -126,6 +130,7 @@ void loop() {
     checkTimeout();
   }
 }
+
 void processCommands() {
   while (client.available()) {
     String line = client.readStringUntil('\n'); 
@@ -151,6 +156,22 @@ void processCommands() {
     } else if (line.startsWith("CMD:OFF")) {
         isTargetActive = false;
         setAllLeds(0);
+        
+    } else if (line.startsWith("CMD:IDENTIFY")) {
+        // 点名功能：紫灯闪烁 3 次
+        Serial.println("收到点名指令 (IDENTIFY)");
+        for(int i=0; i<3; i++) {
+           setAllLeds(strip.Color(255, 0, 255)); // Purple
+           delay(300);
+           setAllLeds(0);
+           delay(300);
+        }
+        // Restore state (Off or Active? Usually Off currently)
+        if (isTargetActive) {
+            setAllLeds(strip.Color(255, 255, 255));
+        } else {
+            setAllLeds(0);
+        }
     }
   }
 }
