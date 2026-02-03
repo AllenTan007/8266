@@ -34,15 +34,39 @@ void setup() {
   WiFi.mode(WIFI_STA);
   WiFi.setSleepMode(WIFI_NONE_SLEEP);
   
-  // ================= 强制连接硬编码热点 =================
-  Serial.print("[WiFi] 正在连接热点: "); Serial.println(target_ssid);
+  // ================= WiFi 连接逻辑 (Clean/No Save) =================
+  WiFi.persistent(false); // 彻底禁止保存
+  WiFi.disconnect(true);
+  
+  Serial.println("[WiFi] 忽略旧配置，尝试连接默认热点 '1'...");
   WiFi.begin(target_ssid, target_password);
-  // 循环等待连接 (模拟 SmartConfig 等待时的红色闪烁)
-  while (WiFi.status() != WL_CONNECTED) {
-    static bool s = false; s=!s;
-    setAllLeds(s ? strip.Color(255, 0, 0) : 0); 
-    delay(500);
-    Serial.print(".");
+  
+  int retryCount = 0;
+  while (WiFi.status() != WL_CONNECTED && retryCount < 15) {
+      delay(500); Serial.print("1"); retryCount++;
+      static bool s = false; s=!s;
+      setAllLeds(s ? strip.Color(255, 0, 0) : 0); // Red Flash
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+     Serial.println("\n[WiFi] 默认热点不可用，启动 SmartConfig 配网模式...");
+     WiFi.beginSmartConfig();
+     
+     // Loop forever waiting for SmartConfig
+     while (!WiFi.smartConfigDone()) {
+         // Flash Purple/Yellow to indicate Config Mode
+         static bool s = false; s=!s;
+         setAllLeds(s ? strip.Color(255, 0, 0) : 0); // Red Flash (User: Not connected = Red) 
+         delay(500);
+         Serial.print("SC");
+         
+         // If connection happens during SC
+         if (WiFi.status() == WL_CONNECTED) {
+             WiFi.stopSmartConfig();
+             break;
+         }
+     }
+     Serial.println("\n[WiFi] SmartConfig 接收成功!");
   }
   // ====================================================
   Serial.println("\n[WiFi] 成功连接: " + WiFi.localIP().toString());
