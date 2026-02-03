@@ -1,6 +1,9 @@
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
 #include <Adafruit_NeoPixel.h>
+#include <ESP8266WiFi.h>
+#include <WiFiUdp.h>
+#include <Adafruit_NeoPixel.h>
 // ================= 用户配置区 (User Config) =================
 // -----------------------------------------------------------
 // 【强制重置配网开关】
