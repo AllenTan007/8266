@@ -1,0 +1,224 @@
+#include <ESP8266WiFi.h>
+#include <WiFiUdp.h>
+#include <Adafruit_NeoPixel.h>
+// ================= 用户配置区 (User Config) =================
+// -----------------------------------------------------------
+// 【强制重置配网开关】
+//  true  (yes) = 开启！每次上电都强制忘记WiFi，必须重新配网
+//  false (no)  = 关闭。记忆WiFi，断电重启自动连 (配好网后，请把这里改成 false 再烧录一次)
+const bool FORCE_WIFI_RESET = true;  // <--- 已为您默认改为 true (开启)
+// -----------------------------------------------------------
+// --- 硬件定义 ---
+const int PIN_SENSOR = 13;   // 光敏/激光接收管
+const int PIN_WS2812 = 12;   // WS2812B 数据脚
+const int NUM_LEDS   = 3;    // 灯珠数量
+const int TCP_PORT   = 8080; // 手机端端口
+const int UDP_PORT   = 8266; // 本机UDP端口
+Adafruit_NeoPixel strip(NUM_LEDS, PIN_WS2812, NEO_GRB + NEO_KHZ800);
+WiFiUDP udp;
+WiFiClient client;
+IPAddress serverIP;
+bool hasFoundServer = false;
+bool isTargetActive = false; 
+unsigned long activeStartTime = 0;
+int activeDuration = 3000;   
+void setup() {
+  Serial.begin(115200);
+  strip.begin();
+  strip.setBrightness(50); 
+  strip.show(); 
+  
+  pinMode(PIN_SENSOR, INPUT_PULLUP);
+  Serial.println("\n[系统启动 - 高性能优化+强制重置版]...");
+  // 0. 必须先设置模式，否则 disconnect 可能不生效
+  WiFi.mode(WIFI_STA);
+  // 性能优化：关闭休眠 (极速响应)
+  WiFi.setSleepMode(WIFI_NONE_SLEEP);
+  // 1. 强制重置逻辑
+  if (FORCE_WIFI_RESET) {
+      Serial.println("[配置] 强制忘记 WiFi... 执行清除!");
+      WiFi.disconnect(true); // true = 擦除 Flash 配置
+      delay(1000);
+      
+      // 红灯长亮 1 秒提示已重置
+      setAllLeds(strip.Color(255, 0, 0)); 
+      delay(1000);
+      setAllLeds(0);
+      
+      // 直接进入配网，不啰嗦
+      startSmartConfig();
+  } 
+  else {
+      // 正常模式：检查有没有保存过 WiFi
+      if (WiFi.SSID() == "") {
+          Serial.println("[WiFi] 无保存配置，进入配网...");
+          startSmartConfig();
+      } else {
+          Serial.print("[WiFi] 正在连接保存的 WiFi: ");
+          Serial.println(WiFi.SSID());
+          WiFi.begin(); // 连接保存的
+      }
+  }
+  // 等待连接 (如果是 FORCE 模式，上面 startSmartConfig 会阻塞通过，这里直接是已连接状态)
+  // (如果是 正常模式，这里负责等待连接)
+  int timeout = 0;
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(200);
+    Serial.print(".");
+    if (timeout++ > 100) { // 20秒没连上
+       Serial.println("\n[WiFi] 连接超时，重新配网...");
+       startSmartConfig();
+       break; 
+    }
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+      Serial.println("\n[WiFi] 成功连接: " + WiFi.localIP().toString());
+      // 蓝灯闪烁提示成功
+      setAllLeds(strip.Color(0, 0, 255));
+      delay(500);
+      setAllLeds(0);
+  }
+  udp.begin(UDP_PORT);
+  Serial.println("[UDP] 服务已就绪");
+}
+void startSmartConfig() {
+  // 确保处于重置状态
+  if (WiFi.status() == WL_CONNECTED) WiFi.disconnect(true);
+  
+  WiFi.mode(WIFI_STA);
+  WiFi.beginSmartConfig();
+  Serial.println("\n[SmartConfig] 等待 App 发送密码...");
+  
+  while (!WiFi.smartConfigDone()) {
+    static bool s = false; s=!s;
+    // 红色快闪
+    setAllLeds(s ? strip.Color(255, 0, 0) : 0); 
+    delay(100); 
+    ESP.wdtFeed();
+  }
+  
+  Serial.println("\n[SmartConfig] 收到密码! 正在连接...");
+  setAllLeds(0);
+  
+  // 等待获取 IP
+  while (WiFi.status() != WL_CONNECTED) {
+      delay(200);
+      Serial.print(".");
+  }
+  Serial.println("\n[SmartConfig] 连接完成!");
+}
+// 统一控制颜色
+void setAllLeds(uint32_t color) {
+  for(int i=0; i<NUM_LEDS; i++) strip.setPixelColor(i, color);
+  strip.show();
+}
+void findServer() {
+  // 性能优化：1秒广播一次
+  static unsigned long lastUDP = 0;
+  if (millis() - lastUDP > 1000) {
+    lastUDP = millis();
+    IPAddress broadcastIP = WiFi.broadcastIP();
+    udp.beginPacket(broadcastIP, UDP_PORT);
+    udp.write("WHO_IS_SERVER");
+    udp.endPacket();
+    Serial.println("[UDP] 呼叫手机...");
+  }
+  
+  int packetSize = udp.parsePacket();
+  if (packetSize) {
+    serverIP = udp.remoteIP();
+    hasFoundServer = true;
+    Serial.print("[UDP] 找到手机IP: "); Serial.println(serverIP);
+    
+    // 绿灯短闪提示
+    setAllLeds(strip.Color(0, 100, 0));
+    delay(200);
+    setAllLeds(0);
+  }
+}
+void connectToApp() {
+  Serial.print("[TCP] 连接 App: "); Serial.println(serverIP);
+  
+  if (client.connect(serverIP, TCP_PORT)) {
+    Serial.println("[TCP] 已连接!");
+    
+    // 性能优化：开启极速模式 (NoDelay)
+    client.setNoDelay(true);
+    // V3 握手
+    client.println("ID:" + WiFi.macAddress() + "|STATUS:READY");
+    
+    // 绿灯长亮1秒
+    setAllLeds(strip.Color(0, 255, 0)); 
+    delay(1000);
+    setAllLeds(0);
+  } else {
+    Serial.println("[TCP] 失败，重试...");
+    delay(2000);
+  }
+}
+void loop() {
+  if (WiFi.status() != WL_CONNECTED) {
+    delay(500); return; 
+  }
+  if (!hasFoundServer) {
+    findServer();
+  } else if (!client.connected()) {
+    setAllLeds(strip.Color(0, 0, 255)); // 掉线蓝灯
+    hasFoundServer = false;
+    connectToApp();
+  } else {
+    processCommands();
+    checkHit();
+    checkTimeout();
+  }
+}
+void processCommands() {
+  while (client.available()) {
+    String line = client.readStringUntil('\n'); 
+    line.trim();
+    if (line.length() == 0) continue;
+    Serial.println("[RX] " + line);
+    
+    if (line.startsWith("CMD:ON")) {
+        int timeIdx = line.indexOf("TIME:");
+        if (timeIdx > 0) {
+            String timeStr = line.substring(timeIdx + 5);
+            activeDuration = timeStr.toInt();
+        } else {
+            activeDuration = 3500;
+        }
+        
+        isTargetActive = true;
+        activeStartTime = millis();
+        setAllLeds(strip.Color(255, 255, 255)); 
+        Serial.println("任务开启");
+        
+    } else if (line.startsWith("CMD:OFF")) {
+        isTargetActive = false;
+        setAllLeds(0);
+    }
+  }
+}
+void checkTimeout() {
+  if (isTargetActive && (millis() - activeStartTime > (unsigned long)activeDuration)) {
+    isTargetActive = false;
+    setAllLeds(0);
+    Serial.println("超时灭灯");
+  }
+}
+void checkHit() {
+  if (isTargetActive) {
+    // 激光击中检测
+    if (digitalRead(PIN_SENSOR) == LOW) {
+       Serial.println("[HIT] 击中!");
+       isTargetActive = false;
+       setAllLeds(0); 
+       
+       // 性能优化：即时发送
+       client.print("RESP:HIT|MAC:" + WiFi.macAddress() + "\n");
+       
+       delay(150); // 最小防抖
+    }
+  }
+}
